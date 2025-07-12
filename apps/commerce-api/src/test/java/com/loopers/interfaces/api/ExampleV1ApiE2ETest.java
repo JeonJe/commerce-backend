@@ -74,15 +74,14 @@ class ExampleV1ApiE2ETest {
             );
         }
 
-        @DisplayName("ID 없이 요청하면, 400 BAD_REQUEST 응답을 받는다.")
+        @DisplayName("숫자가 아닌 ID 로 요청하면, 400 BAD_REQUEST 응답을 받는다.")
         @Test
         void throwsBadRequest_whenIdIsNotProvided() {
             // arrange
             String requestUrl = "/api/v1/examples/나나";
 
             // act
-            ParameterizedTypeReference<ApiResponse<ExampleV1Dto.ExampleResponse>> responseType =
-                new ParameterizedTypeReference<ApiResponse<ExampleV1Dto.ExampleResponse>>() {};
+            ParameterizedTypeReference<ApiResponse<ExampleV1Dto.ExampleResponse>> responseType = new ParameterizedTypeReference<>() {};
             ResponseEntity<ApiResponse<ExampleV1Dto.ExampleResponse>> response =
                 testRestTemplate.exchange(requestUrl, HttpMethod.GET, new HttpEntity<>(null), responseType);
 
