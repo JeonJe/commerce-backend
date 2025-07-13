@@ -1,5 +1,5 @@
-# Loopers Template (Spring + Kotlin)
-Loopers 에서 제공하는 스프링 코틀린 템플릿 프로젝트입니다.
+# Loopers Template (Spring + Java)
+Loopers 에서 제공하는 스프링 자바 템플릿 프로젝트입니다.
 
 ## Getting Started
 현재 프로젝트 안정성 및 유지보수성 등을 위해 아래와 같은 장치를 운용하고 있습니다. 이에 아래 명령어를 통해 프로젝트의 기반을 설치해주세요.
