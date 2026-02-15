@@ -1,173 +1,227 @@
-# 04-erd.md - ERD 설계
+# 04-erd.md - ERD (현재 엔티티 기준)
 
-## 📑 목차
+연결 문서:
+- 개요: [README.md](../../README.md)
+- 요구사항: [01-requirements.md](01-requirements.md)
+- 시퀀스: [02-sequence-diagrams.md](02-sequence-diagrams.md)
+- 클래스: [03-class-diagram.md](03-class-diagram.md)
 
-- [1. 데이터베이스 테이블 구조](#1-데이터베이스-테이블-구조)
-- [2. 테이블 설명](#2-테이블-설명)
-  - [2.1 USERS](#21-users)
-  - [2.2 POINTS](#22-points)
-  - [2.3 BRANDS](#23-brands)
-  - [2.4 PRODUCTS](#24-products)
-  - [2.5 PRODUCT_LIKES](#25-product_likes)
-  - [2.6 ORDERS](#26-orders)
-  - [2.7 ORDER_ITEMS](#27-order_items)
-- [3. 공통 필드](#3-공통-필드)
-
----
-
-## 1. 데이터베이스 테이블 구조
+## 1. 핵심 테이블 구조
 
 ```mermaid
 erDiagram
-    USERS ||--|| POINTS : ""
-    USERS ||--o{ PRODUCT_LIKES : ""
-    USERS ||--o{ ORDERS : ""
+    USERS ||--|| POINT : "1:1 (ref_user_id)"
+    USERS ||--o{ PRODUCT_LIKE : "1:N"
+    USERS ||--o{ ORDERS : "1:N"
+    USERS ||--o{ COUPON : "1:N"
+    USERS ||--o{ PAYMENT : "1:N"
 
-    BRANDS ||--o{ PRODUCTS : ""
+    BRAND ||--o{ PRODUCT : "1:N"
 
-    PRODUCTS ||--o{ ORDER_ITEMS : ""
-    PRODUCTS ||--o{ PRODUCT_LIKES : ""
+    PRODUCT ||--o{ PRODUCT_LIKE : "1:N"
+    PRODUCT ||--o{ ORDER_ITEM : "1:N"
+    PRODUCT ||--o{ MV_PRODUCT_RANK_WEEKLY : "1:N"
+    PRODUCT ||--o{ MV_PRODUCT_RANK_MONTHLY : "1:N"
+    PRODUCT ||--o{ PRODUCT_METRICS : "1:N"
 
-    ORDERS ||--o{ ORDER_ITEMS : ""
+    ORDERS ||--o{ ORDER_ITEM : "1:N"
+    ORDERS ||--o{ PAYMENT : "1:N"
+
+    COUPON_POLICY ||--o{ COUPON : "1:N"
 
     USERS {
-        bigint id PK "사용자 식별자"
-        varchar(50) login_id UK "로그인 ID"
-        varchar(100) email UK "이메일 주소"
-        varchar(10) gender "성별"
-        date birth_date "생년월일"
+        bigint id PK
+        varchar login_id UK
+        varchar email
+        date birth
+        varchar gender
         timestamp created_at
         timestamp updated_at
         timestamp deleted_at
-        varchar(50) created_by
-        varchar(50) updated_by
     }
 
-    POINTS {
-        bigint id PK "포인트 식별자"
-        bigint ref_user_id UK "사용자 참조"
-        bigint amount "포인트 금액"
+    POINT {
+        bigint id PK
+        bigint ref_user_id UK
+        bigint amount
         timestamp created_at
         timestamp updated_at
         timestamp deleted_at
-        varchar(50) created_by
-        varchar(50) updated_by
     }
 
-    BRANDS {
-        bigint id PK "브랜드 식별자"
-        varchar(100) name "브랜드명"
-        varchar(200) description "브랜드 설명"
+    BRAND {
+        bigint id PK
+        varchar name
+        varchar description
         timestamp created_at
         timestamp updated_at
         timestamp deleted_at
-        varchar(50) created_by
-        varchar(50) updated_by
     }
 
-    PRODUCTS {
-        bigint id PK "상품 식별자"
-        varchar(100) name "상품명"
-        bigint price "가격"
-        varchar(200) description "상품 설명"
-        int stock "재고 수량"
-        bigint like_count "좋아요 수 (비정규화)"
-        bigint ref_brand_id "브랜드 참조"
+    PRODUCT {
+        bigint id PK
+        varchar name
+        bigint price
+        varchar description
+        bigint stock
+        bigint like_count
+        bigint ref_brand_id
         timestamp created_at
         timestamp updated_at
         timestamp deleted_at
-        varchar(50) created_by
-        varchar(50) updated_by
     }
 
-    PRODUCT_LIKES {
-        bigint id PK "좋아요 식별자"
-        bigint ref_user_id UK "사용자 참조"
-        bigint ref_product_id UK "상품 참조"
+    PRODUCT_LIKE {
+        bigint id PK
+        bigint ref_user_id
+        bigint ref_product_id
+        timestamp liked_at
         timestamp created_at
         timestamp updated_at
         timestamp deleted_at
-        varchar(50) created_by
-        varchar(50) updated_by
     }
-
-    %% PRODUCT_LIKES: UNIQUE(ref_user_id, ref_product_id) - 중복 좋아요 방지
 
     ORDERS {
-        bigint id PK "주문 식별자"
-        bigint ref_user_id "사용자 참조"
-        varchar(50) status "주문 상태"
-        bigint total_amount "주문 총액"
+        bigint id PK
+        bigint ref_user_id
+        varchar status
+        bigint total_amount
+        bigint point_used_amount
+        bigint pg_amount
+        bigint ref_coupon_id
+        bigint discount_amount
+        timestamp ordered_at
         timestamp created_at
         timestamp updated_at
         timestamp deleted_at
-        varchar(50) created_by
-        varchar(50) updated_by
     }
 
-    ORDER_ITEMS {
-        bigint id PK "주문 항목 식별자"
-        bigint ref_order_id "주문 참조"
-        bigint ref_product_id "상품 참조"
-        int quantity "주문 수량"
-        bigint price "주문 당시 가격"
+    ORDER_ITEM {
+        bigint id PK
+        bigint ref_order_id
+        bigint ref_product_id
+        varchar product_name
+        bigint quantity
+        bigint order_price
         timestamp created_at
         timestamp updated_at
         timestamp deleted_at
-        varchar(50) created_by
-        varchar(50) updated_by
+    }
+
+    COUPON_POLICY {
+        bigint id PK
+        varchar discount_type
+        bigint discount_amount
+        decimal discount_rate
+        timestamp created_at
+        timestamp updated_at
+        timestamp deleted_at
+    }
+
+    COUPON {
+        bigint id PK
+        bigint ref_user_id
+        bigint ref_coupon_policy_id
+        varchar status
+        timestamp used_at
+        bigint ref_used_order_id
+        timestamp created_at
+        timestamp updated_at
+        timestamp deleted_at
+    }
+
+    PAYMENT {
+        bigint id PK
+        bigint ref_order_id
+        bigint ref_user_id
+        varchar transaction_key UK
+        varchar status
+        bigint amount
+        varchar card_type
+        varchar card_no
+        varchar failure_reason
+        timestamp pg_requested_at
+        timestamp pg_completed_at
+        timestamp created_at
+        timestamp updated_at
+        timestamp deleted_at
+    }
+
+    OUTBOX_EVENT {
+        varchar event_id PK
+        varchar topic
+        varchar event_type
+        varchar aggregate_id
+        text payload
+        bigint occurred_at
+        varchar status
+        int retry_count
+        timestamp next_retry_at
+        text last_error
+    }
+
+    MV_PRODUCT_RANK_WEEKLY {
+        bigint ref_product_id PK
+        varchar ranking_year_week PK
+        double score
+        date period_start
+        date period_end
+        timestamp updated_at
+    }
+
+    MV_PRODUCT_RANK_MONTHLY {
+        bigint ref_product_id PK
+        varchar ranking_year_month PK
+        double score
+        date period_start
+        date period_end
+        timestamp updated_at
+    }
+
+    PRODUCT_METRICS {
+        bigint ref_product_id PK
+        int metric_date PK
+        bigint like_count
+        bigint sales_count
+        bigint view_count
+        bigint updated_at
     }
 ```
 
-## 2. 테이블 설명
+## 2. 제약조건 요약
+- `product_like`: `UNIQUE(ref_user_id, ref_product_id)`
+- `point`: `UNIQUE(ref_user_id)`
+- `payment`: `UNIQUE(transaction_key)`
+- `mv_product_rank_weekly`: 복합 PK `(ref_product_id, ranking_year_week)`
+- `mv_product_rank_monthly`: 복합 PK `(ref_product_id, ranking_year_month)`
+- `product_metrics`: 복합 PK `(ref_product_id, metric_date)`
 
-### 2.1 USERS
-- 사용자 계정 정보
-- login_id, email 유니크 제약
+## 3. 인덱스 요약 (주요)
+- `product`
+  - `idx_product_like_count (like_count DESC)`
+  - `idx_product_price (price)`
+  - `idx_product_brand_like (ref_brand_id, like_count DESC)`
+  - `idx_product_brand_id (ref_brand_id, id DESC)`
+  - `idx_product_brand_price (ref_brand_id, price)`
+- `product_like`
+  - `idx_product_like_user_liked (ref_user_id, liked_at DESC)`
+- `orders`
+  - `idx_order_user_id (ref_user_id)`
+  - `idx_order_user_ordered_at (ref_user_id, ordered_at DESC)`
+- `payment`
+  - `idx_payment_order_id (ref_order_id)`
+  - `idx_payment_user_id (ref_user_id)`
+  - `idx_payment_status_requested_at (status, pg_requested_at)`
+  - `idx_payment_transaction_key (transaction_key)`
+- `outbox_event`
+  - `idx_outbox_status_retry (status, next_retry_at)`
+  - `idx_outbox_aggregate (event_type, aggregate_id, occurred_at)`
 
-### 2.2 POINTS
-- 포인트 잔액
-- User와 1:1 관계
-
-### 2.3 BRANDS
-- 브랜드 정보
-- 사전 등록 데이터
-
-### 2.4 PRODUCTS
-- 판매 상품 정보
-- 재고 관리 (stock)
-- 좋아요 수 비정규화 (like_count)
-  - 성능 최적화: 매번 COUNT(*) 대신 미리 계산된 값 저장
-  - 좋아요 추가/삭제 시 트랜잭션으로 업데이트
-- 사전 등록 데이터
-
-### 2.5 PRODUCT_LIKES
-- 상품 좋아요
-- **제약조건**:
-  - PRIMARY KEY: id
-  - UNIQUE KEY: (ref_user_id, ref_product_id)
-    - 한 사용자가 동일 상품에 중복 좋아요 방지
-    - 멱등성 보장을 위한 비즈니스 규칙
-
-### 2.6 ORDERS
-- 주문 정보
-- total_amount는 OrderItem 합계
-- **status**: 주문 상태
-  - `COMPLETED`: 결제 완료
-  - `PAYMENT_FAILED`: 결제 실패
-
-### 2.7 ORDER_ITEMS
-- 주문 상품 상세
-- 주문 당시 가격 저장
-
-## 3. 공통 필드
-
-모든 테이블은 다음 공통 필드를 포함합니다:
-
-| 필드명 | 타입 | 설명 |
-|--------|------|------|
-| created_at | timestamp | 생성 일시 |
-| updated_at | timestamp | 수정 일시 |
-| deleted_at | timestamp | 삭제 일시 (Soft Delete) |
-| created_by | varchar(50) | 생성자 |
-| updated_by | varchar(50) | 수정자 |
+## 4. 설계 메모
+- 외래키 컬럼명은 `ref_` 접두사를 사용한다.
+- `OrderItem`만 `Order`와 객체 참조 관계를 가지며, 나머지는 ID 참조 중심으로 설계한다.
+- `orders`는 금액을 `total_amount`, `discount_amount`, `point_used_amount`, `pg_amount`로 분해 저장한다.
+- 랭킹은 저장소를 분리한다.
+  - 일간: Redis Sorted Set (`ranking:all:yyyyMMdd`)
+  - 주/월간: MySQL MV 테이블 (`mv_product_rank_weekly`, `mv_product_rank_monthly`)
+- 이벤트 전달은 `outbox_event` 기반으로 보장한다.

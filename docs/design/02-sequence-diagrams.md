@@ -1,723 +1,438 @@
-# 02-sequence-diagrams.md - 시퀀스 다이어그램
+# 02-sequence-diagrams.md - 시퀀스 다이어그램 (현재 코드 기준)
 
-## 📑 목차
+연결 문서:
+- 개요: [README.md](../../README.md)
+- 요구사항: [01-requirements.md](01-requirements.md)
+- 클래스: [03-class-diagram.md](03-class-diagram.md)
+- ERD: [04-erd.md](04-erd.md)
 
-### 상품 (Products)
+## 목차
 - [1. 상품 목록 조회](#1-상품-목록-조회)
-- [2. 상품 상세 조회 - 성공 플로우](#2-상품-상세-조회---성공-플로우)
-- [3. 상품 상세 조회 - 에러 처리 (404)](#3-상품-상세-조회---에러-처리-404)
-
-### 좋아요 (Likes)
-- [4. 좋아요 기능 사용자 여정](#4-좋아요-기능-사용자-여정)
-- [5. 상품 좋아요 등록](#5-상품-좋아요-등록)
-- [6. 상품 좋아요 취소](#6-상품-좋아요-취소)
-- [7. 좋아요 목록 조회](#7-좋아요-목록-조회)
-- [8. 좋아요 에러 시나리오](#8-좋아요-에러-시나리오)
-
-### 브랜드 (Brands)
-- [9. 브랜드 조회](#9-브랜드-조회)
-
-### 주문 (Orders)
-- [10. 주문 생성 - 성공 플로우](#10-주문-생성---성공-플로우)
-- [11. 주문 생성 - 실패 플로우](#11-주문-생성---실패-플로우)
-- [12. 주문 목록 조회](#12-주문-목록-조회)
-- [13. 주문 상세 조회](#13-주문-상세-조회)
-
----
+- [2. 상품 상세 조회 + 조회 이벤트 기록](#2-상품-상세-조회--조회-이벤트-기록)
+- [3. 좋아요 등록 (멱등)](#3-좋아요-등록-멱등)
+- [4. 좋아요 취소 (멱등)](#4-좋아요-취소-멱등)
+- [5. 주문 생성](#5-주문-생성)
+- [6. 결제 콜백 처리](#6-결제-콜백-처리)
+- [7. 결제 복구 스케줄러](#7-결제-복구-스케줄러)
+- [8. Outbox 발행/Relay](#8-outbox-발행relay)
+- [9. 일간 랭킹 조회](#9-일간-랭킹-조회)
+- [10. 주간/월간 랭킹 조회](#10-주간월간-랭킹-조회)
 
 ## 1. 상품 목록 조회
 
-### 플로우 설명
-
-사용자가 상품 목록을 조회할 때의 흐름입니다. 브랜드 필터링, 정렬 조건, 페이지네이션을 지원하며, 각 상품의 좋아요 수와 현재 사용자의 좋아요 여부를 함께 반환합니다.
-
-### 주요 처리 사항
-
-- 상품 조회 및 페이지네이션 처리
-- 사용자별 좋아요 상태 조회
-- Product + LikeStatus 결합하여 응답 생성
-
-### 다이어그램
-
 ```mermaid
 sequenceDiagram
     participant Client
     participant ProductController
     participant ProductFacade
-    participant ProductRepository
-    participant LikeRepository
+    participant CacheTemplate
+    participant ProductService
+    participant BrandService
+    participant ProductLikeService
 
-    Client->>+ProductController: GET /api/v1/products?brandId=1&sort=latest&page=0&size=20
-    Note over ProductController: 쿼리 파라미터 검증
+    Client->>+ProductController: GET /api/v1/products
+    ProductController->>+ProductFacade: searchProducts(brandId, condition, pageable)
 
-    ProductController->>+ProductFacade: getProducts(conditions, userId, pageable)
+    alt 캐시 가능 조건 (비회원 + page0 + size20 + latest/likes_desc)
+        ProductFacade->>+CacheTemplate: getOrLoad(cacheKey)
+        CacheTemplate->>+ProductService: findProducts(brandId, pageable)
+        ProductService-->>-CacheTemplate: Page<Product>
+        CacheTemplate-->>-ProductFacade: cached/non-cached ProductList
+    else 일반 조회
+        ProductFacade->>+ProductService: findProducts(brandId, pageable)
+        ProductService-->>-ProductFacade: Page<Product>
+    end
 
-    ProductFacade->>+ProductRepository: findAll(conditions, pageable)
-    ProductRepository-->>-ProductFacade: Page<Product>
+    ProductFacade->>+BrandService: findByIdIn(brandIds)
+    BrandService-->>-ProductFacade: List<Brand>
 
-    ProductFacade->>+LikeRepository: findLikeStatusByUser(userId, productIds)
-    LikeRepository-->>-ProductFacade: Map<ProductId, LikeStatus>
+    ProductFacade->>+ProductLikeService: findLikeStatusByProductId(userId, productIds)
+    ProductLikeService-->>-ProductFacade: Map<productId, liked>
 
-    Note over ProductFacade: Product + LikeStatus → ProductResponse 변환
-
-    ProductFacade-->>-ProductController: Page<ProductResponse>
-    ProductController-->>-Client: 200 OK (응답 DTO)
+    ProductFacade-->>-ProductController: Page<ProductDetail>
+    ProductController-->>-Client: 200 OK (products + pageInfo)
 ```
 
----
-
-## 2. 상품 상세 조회 - 성공 플로우
-
-### 플로우 설명
-
-사용자가 특정 상품의 상세 정보를 조회할 때의 성공 흐름입니다. 상품 정보와 함께 현재 사용자의 좋아요 여부를 반환합니다.
-
-### 주요 처리 사항
-
-- 상품 ID로 상품 정보 조회
-- 사용자의 좋아요 여부 확인
-- 상품 상세 정보 응답 생성
-
-### 다이어그램
+## 2. 상품 상세 조회 + 조회 이벤트 기록
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant ProductController
     participant ProductFacade
-    participant ProductRepository
-    participant LikeRepository
+    participant ProductService
+    participant BrandService
+    participant ProductLikeService
+    participant RankingService
+    participant EventPublisher as DomainEventPublisher
+    participant OutboxWriter as OutboxEventWriter
+    participant OutboxRepo as OutboxEventRepository
 
     Client->>+ProductController: GET /api/v1/products/{productId}
+    ProductController->>+ProductFacade: retrieveProductDetail(productId, userId)
 
-    ProductController->>+ProductFacade: getProduct(productId, userId)
+    ProductFacade->>+ProductService: getById(productId)
+    ProductService-->>-ProductFacade: Product or empty
+    ProductFacade->>+BrandService: getById(brandId)
+    BrandService-->>-ProductFacade: Brand
+    ProductFacade->>+ProductLikeService: isLiked(userId, productId)
+    ProductLikeService-->>-ProductFacade: boolean
+    ProductFacade->>+RankingService: getRankOrNull(today, productId)
+    RankingService-->>-ProductFacade: rank or null
 
-    ProductFacade->>+ProductRepository: findById(productId)
-    ProductRepository-->>-ProductFacade: Product
+    ProductFacade->>+EventPublisher: publish(ProductViewedEvent)
+    Note over EventPublisher,OutboxWriter: BEFORE_COMMIT
+    OutboxWriter->>+OutboxRepo: save(outbox_event: NEW)
+    OutboxRepo-->>-OutboxWriter: saved
+    EventPublisher-->>-ProductFacade: published
 
-    ProductFacade->>+LikeRepository: existsByUserIdAndProductId(userId, productId)
-    LikeRepository-->>-ProductFacade: boolean (좋아요 여부)
-
-    Note over ProductFacade: Product + LikeStatus → ProductDetailResponse 변환
-
-    ProductFacade-->>-ProductController: ProductDetailResponse
+    ProductFacade-->>-ProductController: ProductDetail
     ProductController-->>-Client: 200 OK
 ```
 
----
-
-## 3. 상품 상세 조회 - 에러 처리 (404)
-
-### 플로우 설명
-
-존재하지 않는 상품을 조회할 때의 에러 처리 흐름입니다.
-
-### 주요 처리 사항
-
-- 상품 존재 여부 확인
-- ProductNotFoundException 발생
-- ExceptionHandler에서 404 응답 변환
-
-### 다이어그램
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant ProductController
-    participant ProductFacade
-    participant ProductRepository
-
-    Client->>+ProductController: GET /api/v1/products/999
-
-    ProductController->>+ProductFacade: getProduct(999, userId)
-
-    ProductFacade->>+ProductRepository: findById(999)
-    ProductRepository-->>-ProductFacade: ProductNotFoundException
-
-    ProductFacade-->>-ProductController: ProductNotFoundException
-    Note over ProductController: ExceptionHandler가 처리
-    ProductController-->>-Client: 404 Not Found
-```
-
----
-
-## 4. 좋아요 기능 사용자 여정
-
-### 전체 시나리오
-
-김철수가 좋아요 기능을 사용하는 완전한 여정:
-
-1. **첫 좋아요 등록** → 마음에 드는 상품에 좋아요 클릭
-2. **중복 등록 시도** → 실수로 다시 클릭해도 멱등성으로 정상 처리
-3. **좋아요 취소** → 마음이 바뀌어 취소 버튼 클릭
-4. **중복 취소 시도** → 이미 취소된 상태에서 재시도해도 멱등성으로 정상 처리
-5. **재등록** → 다시 생각을 바꿔 좋아요 재등록
-6. **좋아요 목록 확인** → 좋아요한 상품들을 한눈에 조회
-
-이 여정을 통해 좋아요 기능의 **멱등성**(동일한 요청을 여러 번 해도 결과가 동일)이 어떻게 보장되는지 확인할 수 있습니다.
-
-**관련 시퀀스**:
-- [5. 상품 좋아요 등록](#5-상품-좋아요-등록)
-- [6. 상품 좋아요 취소](#6-상품-좋아요-취소)
-- [7. 좋아요 목록 조회](#7-좋아요-목록-조회)
-
----
-
-## 5. 상품 좋아요 등록
-
-### 플로우 설명
-
-사용자가 상품에 좋아요를 등록할 때의 흐름입니다. 멱등성을 보장하기 위해 이미 좋아요가 등록되어 있으면 중복 등록하지 않고 정상 응답을 반환합니다.
-
-### 주요 처리 사항
-
-- 상품 존재 여부 확인
-- 좋아요 중복 여부 확인
-- 신규 등록 시 Like 도메인 객체 생성 및 저장
-- **Product 테이블의 좋아요 수 증가 (like_count++)**
-- 이미 존재 시 멱등성 보장 (중복 등록 무시)
-
-### 다이어그램
+## 3. 좋아요 등록 (멱등)
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant LikeController
     participant LikeFacade
-    participant ProductReader
-    participant LikeRepository
-    participant ProductRepository
-    participant Like
-    participant Product
+    participant ProductService
+    participant ProductLikeService
+    participant LikeRepo as ProductLikeRepository
+    participant EventPublisher as DomainEventPublisher
+    participant LikeEventHandler
 
     Client->>+LikeController: POST /api/v1/like/products/{productId}
-    Note over LikeController: X-USER-ID 헤더 추출
+    LikeController->>+LikeFacade: registerProductLike(userId, productId)
 
-    LikeController->>+LikeFacade: addLike(userId, productId)
+    LikeFacade->>+ProductService: getById(productId)
+    ProductService-->>-LikeFacade: Product or empty
 
-    LikeFacade->>+ProductReader: findById(productId)
-    ProductReader-->>-LikeFacade: Product (또는 ProductNotFoundException)
+    LikeFacade->>+ProductLikeService: createLike(userId, productId)
+    ProductLikeService->>+LikeRepo: saveIfNotExists(INSERT IGNORE)
+    LikeRepo-->>-ProductLikeService: saved=true/false
 
-    LikeFacade->>+LikeRepository: existsByUserIdAndProductId(userId, productId)
-    LikeRepository-->>-LikeFacade: boolean
-
-    alt 좋아요 없음 (신규 등록)
-        LikeFacade->>+Like: create(userId, productId)
-        Like-->>-LikeFacade: Like 도메인 객체
-        LikeFacade->>+LikeRepository: save(Like)
-        LikeRepository-->>-LikeFacade: saved Like
-
-        Note over LikeFacade,Product: 좋아요 수 증가
-        LikeFacade->>Product: incrementLikeCount()
-        LikeFacade->>ProductRepository: save(Product)
-    else 좋아요 이미 존재 (멱등성)
-        Note over LikeFacade: 중복 등록 무시, 정상 응답
+    alt 신규 좋아요(saved=true)
+        ProductLikeService->>+EventPublisher: publish(ProductLikedEvent)
+        EventPublisher-->>-ProductLikeService: published
+        Note over LikeEventHandler: AFTER_COMMIT + @Async
+        LikeEventHandler->>ProductService: increaseLikeCount(productId)
+    else 중복 좋아요(saved=false)
+        Note over ProductLikeService: 이벤트 발행 없음 (멱등)
     end
 
-    LikeFacade-->>-LikeController: void (성공)
+    ProductLikeService-->>-LikeFacade: return
+    LikeFacade-->>-LikeController: return
     LikeController-->>-Client: 200 OK
 ```
 
----
-
-## 6. 상품 좋아요 취소
-
-### 플로우 설명
-
-사용자가 상품의 좋아요를 취소할 때의 흐름입니다. 멱등성을 보장하기 위해 이미 취소되어 있어도 정상 응답을 반환합니다.
-
-### 주요 처리 사항
-
-- 좋아요 존재 여부 확인
-- 존재 시 삭제 처리
-- **Product 테이블의 좋아요 수 감소 (like_count--)**
-- 없을 시 멱등성 보장 (이미 취소됨)
-
-### 다이어그램
+## 4. 좋아요 취소 (멱등)
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant LikeController
     participant LikeFacade
-    participant ProductReader
-    participant LikeRepository
-    participant ProductRepository
-    participant Product
+    participant ProductService
+    participant ProductLikeService
+    participant LikeRepo as ProductLikeRepository
+    participant EventPublisher as DomainEventPublisher
+    participant LikeEventHandler
 
     Client->>+LikeController: DELETE /api/v1/like/products/{productId}
-    Note over LikeController: X-USER-ID 헤더 추출
+    LikeController->>+LikeFacade: cancelProductLike(userId, productId)
 
-    LikeController->>+LikeFacade: removeLike(userId, productId)
+    LikeFacade->>+ProductService: getById(productId)
+    ProductService-->>-LikeFacade: Product or empty
 
-    LikeFacade->>+LikeRepository: findByUserIdAndProductId(userId, productId)
-    LikeRepository-->>-LikeFacade: Optional<Like>
+    LikeFacade->>+ProductLikeService: deleteLike(userId, productId)
+    ProductLikeService->>+LikeRepo: deleteByUserIdAndProductId
+    LikeRepo-->>-ProductLikeService: deletedCount
 
-    alt 좋아요 존재
-        LikeFacade->>+LikeRepository: delete(Like)
-        Note over LikeRepository: Soft Delete 또는 Hard Delete
-        LikeRepository-->>-LikeFacade: void (삭제 완료)
-
-        Note over LikeFacade,Product: 좋아요 수 감소
-        LikeFacade->>+ProductReader: findById(productId)
-        ProductReader-->>-LikeFacade: Product
-        LikeFacade->>Product: decrementLikeCount()
-        LikeFacade->>ProductRepository: save(Product)
-    else 좋아요 없음 (멱등성)
-        Note over LikeFacade: 이미 삭제됨, 정상 응답
+    alt deletedCount > 0
+        ProductLikeService->>+EventPublisher: publish(ProductUnlikedEvent)
+        EventPublisher-->>-ProductLikeService: published
+        Note over LikeEventHandler: AFTER_COMMIT + @Async
+        LikeEventHandler->>ProductService: decreaseLikeCount(productId)
+    else 이미 취소된 상태
+        Note over ProductLikeService: 이벤트 발행 없음 (멱등)
     end
 
-    LikeFacade-->>-LikeController: void (성공)
+    ProductLikeService-->>-LikeFacade: return
+    LikeFacade-->>-LikeController: return
     LikeController-->>-Client: 200 OK
 ```
 
----
-
-## 7. 좋아요 목록 조회
-
-### 플로우 설명
-
-사용자가 자신이 좋아요한 상품 목록을 조회할 때의 흐름입니다. 페이지네이션과 정렬을 지원하며, 각 상품의 기본 정보와 브랜드 정보를 함께 반환합니다.
-
-### 주요 처리 사항
-
-- 사용자의 좋아요 목록 조회
-- 각 좋아요에 해당하는 상품 정보 조회
-- Like + Product 결합하여 응답 생성
-
-### 다이어그램
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant LikeController
-    participant LikeFacade
-    participant LikeRepository
-    participant ProductReader
-
-    Client->>+LikeController: GET /api/v1/like/products?page=0&size=20&sort=latest
-    Note over LikeController: X-USER-ID 헤더 추출
-
-    LikeController->>+LikeFacade: getLikedProducts(userId, pageable)
-
-    LikeFacade->>+LikeRepository: findByUserId(userId, pageable)
-    LikeRepository-->>-LikeFacade: Page<Like>
-
-    Note over LikeFacade: Like 목록에서 productIds 추출
-    LikeFacade->>+ProductReader: findByIdIn(productIds)
-    ProductReader-->>-LikeFacade: List<Product>
-
-    Note over LikeFacade: Like + Product → LikedProductResponse 변환
-
-    LikeFacade-->>-LikeController: Page<LikedProductResponse>
-    LikeController-->>-Client: 200 OK (응답 DTO)
-```
-
----
-
-## 8. 좋아요 에러 시나리오
-
-### 플로우 설명
-
-좋아요 기능에서 발생할 수 있는 주요 에러 케이스입니다.
-
-### 8.1 상품이 존재하지 않는 경우 (404)
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant LikeController
-    participant LikeFacade
-    participant ProductReader
-
-    Client->>+LikeController: POST /api/v1/like/products/999
-
-    LikeController->>+LikeFacade: addLike(userId, 999)
-
-    LikeFacade->>+ProductReader: findById(999)
-    ProductReader-->>-LikeFacade: ProductNotFoundException
-
-    LikeFacade-->>-LikeController: ProductNotFoundException
-    Note over LikeController: ExceptionHandler가 처리
-    LikeController-->>-Client: 404 Not Found
-```
-
-### 8.2 인증되지 않은 사용자 (401)
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant LikeController
-
-    Client->>+LikeController: POST /api/v1/like/products/{productId}
-    Note over LikeController: X-USER-ID 헤더 없음
-
-    LikeController-->>-Client: 401 Unauthorized
-```
-
-### 8.3 중복 좋아요 등록 시도 (멱등성 처리)
-
-**플로우 설명**: 이미 좋아요한 상품에 다시 좋아요를 시도할 때, DB UNIQUE 제약 조건을 활용하여 멱등성을 보장하는 흐름입니다.
-
-**주요 처리 사항**:
-- DB UNIQUE(ref_user_id, ref_product_id) 제약으로 중복 방지
-- 제약 위반 예외 발생 시 200 OK 응답으로 변환
-- 동시 요청에도 데이터 일관성 보장
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant LikeController
-    participant LikeFacade
-    participant ProductReader
-    participant LikeRepository
-    participant Database
-
-    Client->>+LikeController: POST /api/v1/like/products/{productId}
-    Note over Client: 이미 좋아요한 상품에 재시도
-
-    LikeController->>+LikeFacade: addLike(userId, productId)
-
-    LikeFacade->>+ProductReader: findById(productId)
-    ProductReader-->>-LikeFacade: Product
-
-    LikeFacade->>+LikeRepository: save(Like)
-    LikeRepository->>+Database: INSERT INTO product_likes
-    Note over Database: UNIQUE(ref_user_id, ref_product_id) 제약 위반
-
-    Database-->>-LikeRepository: IntegrityConstraintViolationException
-    LikeRepository-->>-LikeFacade: IntegrityConstraintViolationException
-
-    Note over LikeFacade: 예외 처리: 이미 등록됨으로 판단
-    Note over LikeFacade: 멱등성 보장 - 정상 응답 반환
-
-    LikeFacade-->>-LikeController: void (성공)
-    LikeController-->>-Client: 200 OK
-    Note over Client: 중복 등록 시도이지만 정상 응답
-```
-
----
-
-## 9. 브랜드 조회
-
-### 플로우 설명
-
-사용자가 특정 브랜드의 정보를 조회할 때의 흐름입니다. 브랜드 ID를 통해 브랜드명과 설명을 조회합니다.
-
-### 주요 처리 사항
-
-- 브랜드 ID로 브랜드 정보 조회
-- 브랜드 존재 여부 확인
-- 브랜드 정보 응답 생성
-
-### 다이어그램
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant BrandController
-    participant BrandFacade
-    participant BrandRepository
-
-    Client->>+BrandController: GET /api/v1/brands/{brandId}
-
-    BrandController->>+BrandFacade: getBrand(brandId)
-
-    BrandFacade->>+BrandRepository: findById(brandId)
-
-    alt 브랜드 존재
-        BrandRepository-->>BrandFacade: Brand
-        Note over BrandFacade: Brand → BrandResponse 변환
-        BrandFacade-->>BrandController: BrandResponse
-        BrandController-->>Client: 200 OK
-    else 브랜드 없음
-        BrandRepository-->>BrandFacade: BrandNotFoundException
-        BrandFacade-->>BrandController: BrandNotFoundException
-        Note over BrandController: ExceptionHandler가 처리
-        BrandController-->>Client: 404 Not Found
-    end
-
-    BrandRepository-->>-BrandFacade: (완료)
-    BrandFacade-->>-BrandController: (완료)
-    BrandController-->>-Client: (완료)
-```
-
----
-
-## 10. 주문 생성 - 성공 플로우
-
-### 플로우 설명
-
-사용자가 여러 상품을 주문하고 결제할 때의 성공 흐름입니다. 재고 확인, 포인트 확인, 재고 차감, 포인트 차감이 하나의 트랜잭션으로 처리됩니다.
-
-### 주요 처리 사항
-
-- 주문 상품별 재고 확인
-- 총 결제 금액 계산
-- 사용자 포인트 잔액 확인
-- 재고 차감 및 주문 생성
-- 포인트 차감
-- 외부 시스템 전송 (Mock)
-
-### 다이어그램
+## 5. 주문 생성
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant OrderController
     participant OrderFacade
-    participant ProductReader
-    participant Order
-    participant OrderRepository
-    participant PointFacade
-    participant External
+    participant ProductService
+    participant OrderCreateService
+    participant PaymentCalc as OrderPaymentCalculator
+    participant OrderService
+    participant PaymentFacade
+    participant PaymentService
+    participant PgClient
+    participant OrderEventHandler
+    participant PointService
+    participant CouponService
 
     Client->>+OrderController: POST /api/v1/orders
-    Note over OrderController: 요청 DTO 검증
+    OrderController->>+OrderFacade: createOrder(userId, items, couponId)
 
-    OrderController->>+OrderFacade: createOrder(userId, orderItems)
+    OrderFacade->>+ProductService: findByIdsWithLock(productIds)
+    ProductService-->>-OrderFacade: locked products
+    OrderFacade->>+OrderCreateService: prepareOrder(items, productById)
+    OrderCreateService-->>-OrderFacade: OrderPreparation
+    OrderFacade->>+PaymentCalc: calculate(userId, couponId, totalAmount)
+    PaymentCalc-->>-OrderFacade: discount/point/pg 금액
 
-    Note over OrderFacade: 트랜잭션 시작
+    OrderFacade->>+OrderService: create(OrderCreateCommand)
+    Note over OrderService: status=PENDING 저장 + OrderCreatedEvent 발행
+    OrderService-->>-OrderFacade: Order(PENDING)
 
-    Note over OrderFacade: orderItems에서 productIds 추출
-    OrderFacade->>+ProductReader: findByIdIn(productIds)
-    ProductReader-->>-OrderFacade: List<Product>
+    OrderFacade-->>-OrderController: Order
+    OrderController->>+PaymentFacade: processPayment(order, paymentInfo)
 
-    Note over OrderFacade: 각 Product 재고 확인 (stock >= quantity)
-    Note over OrderFacade: 총 결제 금액 계산
+    alt pgAmount == 0 (포인트 전액)
+        PaymentFacade-->>OrderController: PG 요청 스킵
+    else pgAmount > 0
+        PaymentFacade->>+PaymentService: create(REQUESTED)
+        PaymentService-->>-PaymentFacade: Payment
+        PaymentFacade->>+PgClient: requestPayment
+        PgClient-->>-PaymentFacade: PgPaymentResponse
 
-    OrderFacade->>+PointFacade: checkBalance(userId, totalAmount)
-    PointFacade-->>-OrderFacade: 포인트 잔액 (충분함)
-
-    loop 각 Product마다
-        OrderFacade->>Product: decreaseStock(quantity)
-        Note over Product: 재고 차감 처리 (도메인 로직)
+        alt PG PENDING 응답
+            PaymentFacade->>+PaymentService: toPending(paymentId, transactionKey)
+            PaymentService-->>-PaymentFacade: updated
+        else PG 요청 실패
+            PaymentFacade->>+PaymentService: toRequestFailed(paymentId)
+            PaymentService-->>-PaymentFacade: updated
+            PaymentFacade-->>OrderController: exception
+        end
     end
 
-    OrderFacade->>ProductRepository: saveAll(products)
+    OrderController-->>-Client: 201 Created (주문은 우선 PENDING)
 
-    OrderFacade->>+Order: create(userId, orderItems, totalAmount)
-    Order-->>-OrderFacade: Order 도메인 객체
-
-    OrderFacade->>+OrderRepository: save(Order)
-    OrderRepository-->>-OrderFacade: saved Order
-
-    OrderFacade->>+PointFacade: deductPoints(userId, totalAmount)
-    PointFacade-->>-OrderFacade: 포인트 차감 완료
-
-    Note over OrderFacade: 트랜잭션 커밋
-
-    OrderFacade->>+External: sendOrderInfo(order)
-    External-->>-OrderFacade: 전송 완료 (Mock)
-
-    Note over OrderFacade: Order → OrderResponse 변환
-
-    OrderFacade-->>-OrderController: OrderResponse
-    OrderController-->>-Client: 201 Created
+    Note over OrderEventHandler: AFTER_COMMIT + @Async
+    par 포인트 차감
+        OrderEventHandler->>PointService: deduct(userId, pointAmount)
+    and 쿠폰 사용
+        OrderEventHandler->>CouponService: useCoupon(couponId)
+    and 포인트 전액 결제 주문 완료 처리(pgAmount==0)
+        OrderEventHandler->>ProductService: tryDecreaseStocks(orderItems)
+        alt 재고 충분
+            OrderEventHandler->>OrderService: completeOrder(orderId)
+        else 재고 부족
+            OrderEventHandler->>OrderService: failPaymentOrder(orderId)
+            OrderEventHandler->>PointService: refund(userId, pointUsed)
+            OrderEventHandler->>CouponService: restoreCoupon(couponId)
+        end
+    end
 ```
 
----
-
-## 11. 주문 생성 - 실패 플로우
-
-### 플로우 설명
-
-주문 생성 시 재고 부족 또는 포인트 부족으로 실패하는 경우의 흐름입니다. 트랜잭션이 롤백되어 모든 변경사항이 취소됩니다.
-
-### 11.1 재고 부족 케이스
+## 6. 결제 콜백 처리
 
 ```mermaid
 sequenceDiagram
-    participant Client
-    participant OrderController
-    participant OrderFacade
-    participant ProductReader
+    participant PG
+    participant PaymentCallbackController
+    participant PaymentCallbackFacade
+    participant PaymentService
+    participant EventPublisher as DomainEventPublisher
+    participant PaymentEventHandler
+    participant OrderService
+    participant ProductService
+    participant PointService
+    participant CouponService
 
-    Client->>+OrderController: POST /api/v1/orders
+    PG->>+PaymentCallbackController: POST /api/v1/payments/callback
+    PaymentCallbackController->>+PaymentCallbackFacade: handleCallback(request)
 
-    OrderController->>+OrderFacade: createOrder(userId, orderItems)
+    alt status=SUCCESS
+        PaymentCallbackFacade->>+PaymentService: getByTransactionKeyWithLock(txKey)
+        PaymentService-->>-PaymentCallbackFacade: Payment
 
-    Note over OrderFacade: 트랜잭션 시작
+        alt 이미 완료된 결제
+            PaymentCallbackFacade-->>PaymentCallbackController: no-op
+        else 미완료 결제
+            PaymentCallbackFacade->>+PaymentService: toSuccess(payment, completedAt)
+            Note over PaymentService,EventPublisher: PaymentSucceededEvent 발행
+            PaymentService-->>-PaymentCallbackFacade: updated
+        end
+    else status=FAILED
+        PaymentCallbackFacade->>+PaymentService: getByTransactionKeyWithLock(txKey)
+        PaymentService-->>-PaymentCallbackFacade: Payment
 
-    OrderFacade->>+ProductReader: findById(productId)
-    ProductReader-->>-OrderFacade: Product
-
-    Note over OrderFacade: 재고 확인 (stock < quantity)
-    OrderFacade-->>OrderFacade: InsufficientStockException
-
-    Note over OrderFacade: 트랜잭션 롤백
-
-    OrderFacade-->>-OrderController: InsufficientStockException
-    Note over OrderController: ExceptionHandler가 처리
-    OrderController-->>-Client: 400 Bad Request (재고 부족)
-```
-
-### 11.2 포인트 부족 케이스
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant OrderController
-    participant OrderFacade
-    participant ProductReader
-    participant PointFacade
-
-    Client->>+OrderController: POST /api/v1/orders
-
-    OrderController->>+OrderFacade: createOrder(userId, orderItems)
-
-    Note over OrderFacade: 트랜잭션 시작
-
-    Note over OrderFacade: orderItems에서 productIds 추출
-    OrderFacade->>+ProductReader: findByIdIn(productIds)
-    ProductReader-->>-OrderFacade: List<Product>
-
-    Note over OrderFacade: 각 Product 재고 확인 (stock >= quantity)
-    Note over OrderFacade: 총 결제 금액 계산
-
-    OrderFacade->>+PointFacade: checkBalance(userId, totalAmount)
-    PointFacade-->>-OrderFacade: InsufficientPointException
-
-    Note over OrderFacade: 트랜잭션 롤백
-
-    OrderFacade-->>-OrderController: InsufficientPointException
-    Note over OrderController: ExceptionHandler가 처리
-    OrderController-->>-Client: 400 Bad Request (포인트 부족)
-```
-
-### 11.3 결제 처리 실패
-
-**플로우 설명**: 주문 저장과 포인트 차감은 성공했으나, 외부 결제 시스템(Mock) 처리가 실패하는 경우입니다. 트랜잭션은 이미 커밋되었으므로 재시도 정책을 적용합니다.
-
-**주요 처리 사항**:
-- 트랜잭션 커밋 후 결제 시스템 호출 (트랜잭션 밖)
-- 3회 자동 재시도 (1초, 2초, 4초 간격, 지수 백오프)
-- 재시도 실패 시 주문 상태를 '결제 실패'로 마킹 및 500 에러 응답
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant OrderController
-    participant OrderFacade
-    participant OrderRepository
-    participant Order
-    participant PaymentSystem
-
-    Client->>+OrderController: POST /api/v1/orders
-
-    OrderController->>+OrderFacade: createOrder(userId, orderItems)
-
-    Note over OrderFacade: 트랜잭션 시작
-    Note over OrderFacade: 재고 확인, 포인트 확인
-    Note over OrderFacade: 재고 차감, 포인트 차감
-
-    OrderFacade->>+Order: create(userId, orderItems, totalAmount)
-    Order-->>-OrderFacade: Order 도메인 객체
-
-    OrderFacade->>+OrderRepository: save(Order)
-    OrderRepository-->>-OrderFacade: saved Order
-
-    Note over OrderFacade: 트랜잭션 커밋 완료
-    Note over OrderFacade: (주문 저장, 재고/포인트 차감 완료)
-
-    loop 3회 재시도 (지수 백오프: 1초, 2초, 4초)
-        OrderFacade->>+PaymentSystem: processPayment(order)
-        PaymentSystem-->>-OrderFacade: Timeout/Error
-        Note over OrderFacade: 재시도 대기
+        alt 이미 완료된 결제
+            PaymentCallbackFacade-->>PaymentCallbackController: no-op
+        else 미완료 결제
+            PaymentCallbackFacade->>+PaymentService: toFailed(payment, reason, completedAt)
+            Note over PaymentService,EventPublisher: PaymentFailedEvent 발행
+            PaymentService-->>-PaymentCallbackFacade: updated
+        end
+    else 기타 상태
+        PaymentCallbackFacade-->>PaymentCallbackController: no-op
     end
 
-    Note over OrderFacade: 재시도 실패 (3회 모두 실패)
-    OrderFacade->>Order: failPayment()
-    OrderFacade->>OrderRepository: save(Order)
+    PaymentCallbackController-->>-PG: 200 OK
 
-    Note over OrderFacade: 모니터링 알림 발송
-
-    OrderFacade-->>-OrderController: PaymentFailedException
-    Note over OrderController: ExceptionHandler가 처리
-    OrderController-->>-Client: 500 Internal Server Error
-    Note over Client: 주문은 저장되었으나 결제 처리 실패
+    Note over PaymentEventHandler: AFTER_COMMIT + @Async
+    alt PaymentSucceededEvent
+        PaymentEventHandler->>OrderService: getWithItemsById(orderId)
+        PaymentEventHandler->>ProductService: tryDecreaseStocks(orderItems)
+        alt 재고 충분
+            PaymentEventHandler->>OrderService: completeOrder(orderId)
+        else 재고 부족
+            PaymentEventHandler->>OrderService: failPaymentOrder(orderId)
+            PaymentEventHandler->>PointService: refund(userId, pointUsed)
+            PaymentEventHandler->>CouponService: restoreCoupon(couponId)
+        end
+    else PaymentFailedEvent
+        PaymentEventHandler->>OrderService: failPaymentOrder(orderId)
+        PaymentEventHandler->>PointService: refund(optional)
+        PaymentEventHandler->>CouponService: restoreCoupon(optional)
+    end
 ```
 
----
-
-## 12. 주문 목록 조회
-
-### 플로우 설명
-
-사용자가 자신의 주문 목록을 조회할 때의 흐름입니다. 페이지네이션을 지원하며, 각 주문의 기본 정보(주문 ID, 일시, 총 금액, 상품 수)를 반환합니다.
-
-### 주요 처리 사항
-
-- 사용자별 주문 목록 조회
-- 페이지네이션 처리
-- 주문 기본 정보 응답 생성
-
-### 다이어그램
+## 7. 결제 복구 스케줄러
 
 ```mermaid
 sequenceDiagram
-    participant Client
-    participant OrderController
-    participant OrderFacade
-    participant OrderRepository
+    participant Scheduler as PaymentRecoveryScheduler
+    participant PaymentService
+    participant PgClient
+    participant CallbackFacade as PaymentCallbackFacade
 
-    Client->>+OrderController: GET /api/v1/orders?page=0&size=20
-    Note over OrderController: X-USER-ID 헤더 추출
+    loop 60초 주기
+        Scheduler->>+PaymentService: findPendingPaymentsBefore(now-1m)
+        PaymentService-->>-Scheduler: List<Payment>
 
-    OrderController->>+OrderFacade: getOrders(userId, pageable)
+        loop 각 pending payment
+            Scheduler->>+PgClient: getTransaction(userId, txKey)
+            PgClient-->>-Scheduler: PgTransactionResponse
 
-    OrderFacade->>+OrderRepository: findByUserId(userId, pageable)
-    OrderRepository-->>-OrderFacade: Page<Order>
-
-    Note over OrderFacade: Order → OrderListResponse 변환
-
-    OrderFacade-->>-OrderController: Page<OrderListResponse>
-    OrderController-->>-Client: 200 OK
+            alt status=SUCCESS
+                Scheduler->>+CallbackFacade: handleSuccess(txKey)
+                CallbackFacade-->>-Scheduler: done
+            else status=FAILED
+                Scheduler->>+CallbackFacade: handleFailed(txKey, reason)
+                CallbackFacade-->>-Scheduler: done
+            else status=PENDING
+                Note over Scheduler: 다음 주기에 재확인
+            end
+        end
+    end
 ```
 
----
-
-## 13. 주문 상세 조회
-
-### 플로우 설명
-
-사용자가 특정 주문의 상세 정보를 조회할 때의 흐름입니다. 주문 항목별 상품 정보와 가격을 포함한 전체 주문 정보를 반환합니다.
-
-### 주요 처리 사항
-
-- 주문 ID로 주문 정보 조회
-- 주문 항목(OrderItem) 정보 포함
-- 주문 상세 정보 응답 생성
-
-### 다이어그램
+## 8. Outbox 발행/Relay
 
 ```mermaid
 sequenceDiagram
-    participant Client
-    participant OrderController
-    participant OrderFacade
-    participant OrderRepository
+    participant DomainTx as Domain Transaction
+    participant Writer as OutboxEventWriter
+    participant Repo as OutboxEventRepository
+    participant Updater as OutboxEventUpdater
+    participant Relay as OutboxRelay
+    participant Kafka
 
-    Client->>+OrderController: GET /api/v1/orders/{orderId}
-    Note over OrderController: X-USER-ID 헤더 추출
+    DomainTx->>+Writer: TransactionalEventListener(BEFORE_COMMIT)
+    Writer->>+Repo: save(outbox_event, status=NEW)
+    Repo-->>-Writer: saved
+    Writer-->>-DomainTx: done
 
-    OrderController->>+OrderFacade: getOrder(orderId, userId)
-
-    OrderFacade->>+OrderRepository: findByIdAndUserId(orderId, userId)
-
-    alt 주문 존재
-        OrderRepository-->>OrderFacade: Order (with OrderItems)
-        Note over OrderFacade: Order → OrderDetailResponse 변환
-        OrderFacade-->>OrderController: OrderDetailResponse
-        OrderController-->>Client: 200 OK
-    else 주문 없음
-        OrderRepository-->>OrderFacade: OrderNotFoundException
-        OrderFacade-->>OrderController: OrderNotFoundException
-        Note over OrderController: ExceptionHandler가 처리
-        OrderController-->>Client: 404 Not Found
+    alt 이벤트가 ImmediatePublishEvent
+        DomainTx->>+Writer: TransactionalEventListener(AFTER_COMMIT)
+        Writer->>+Updater: updateStatusToSending(eventId)
+        alt 선점 성공
+            Writer->>Kafka: send(topic, aggregateId, envelope)
+            alt 전송 성공
+                Writer->>Updater: toSent(eventId)
+            else 전송 실패
+                Writer->>Updater: resetToNew(eventId)
+            end
+        else 선점 실패
+            Note over Writer: Relay가 처리
+        end
     end
 
-    OrderRepository-->>-OrderFacade: (완료)
-    OrderFacade-->>-OrderController: (완료)
-    OrderController-->>-Client: (완료)
+    loop fixed-delay relay
+        Relay->>Repo: recoverExpiredEvents()
+        Relay->>Repo: findNewEventsReadyToSend(batch)
+        Relay->>Repo: updateStatusToSending(eventId)
+        Relay->>Kafka: send(...)
+        alt 성공
+            Relay->>Repo: save(status=SENT)
+        else 실패
+            Relay->>Repo: save(status=NEW 재시도 or DEAD)
+        end
+    end
+```
+
+## 9. 일간 랭킹 조회
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant RankingController
+    participant RankingFacade
+    participant RankingService
+    participant RankingRepo as RankingRedisRepository
+    participant ProductService
+    participant BrandService
+    participant ProductLikeService
+
+    Client->>+RankingController: GET /api/v1/rankings/daily?date=yyyyMMdd
+    RankingController->>+RankingFacade: getDailyRanking(date, page, size, userId)
+
+    RankingFacade->>+RankingService: getTopN(date, page, size)
+    RankingService->>+RankingRepo: getTopN(redisKey)
+    RankingRepo-->>-RankingService: List<RankingEntry>
+    RankingService-->>-RankingFacade: entries
+
+    RankingFacade->>+ProductService: findByIds(productIds)
+    ProductService-->>-RankingFacade: products
+    RankingFacade->>+BrandService: findByIdIn(brandIds)
+    BrandService-->>-RankingFacade: brands
+    RankingFacade->>+ProductLikeService: findLikeStatusByProductId(userId, productIds)
+    ProductLikeService-->>-RankingFacade: liked map
+
+    RankingFacade-->>-RankingController: RankingResult
+    RankingController-->>-Client: 200 OK
+```
+
+## 10. 주간/월간 랭킹 조회
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant RankingController
+    participant RankingFacade
+    participant RankingService
+    participant WeeklyRepo as WeeklyProductRankRepository
+    participant MonthlyRepo as MonthlyProductRankRepository
+
+    Client->>+RankingController: GET /api/v1/rankings/weekly or monthly
+    RankingController->>+RankingFacade: getWeeklyRanking/getMonthlyRanking
+
+    alt weekly
+        RankingFacade->>+RankingService: getWeeklyTopN(date, page, size)
+        RankingService->>+WeeklyRepo: findByYearWeekOrderByScoreDesc
+        WeeklyRepo-->>-RankingService: weekly rows
+        RankingService-->>-RankingFacade: ranking entries
+    else monthly
+        RankingFacade->>+RankingService: getMonthlyTopN(date, page, size)
+        RankingService->>+MonthlyRepo: findByYearMonthOrderByScoreDesc
+        MonthlyRepo-->>-RankingService: monthly rows
+        RankingService-->>-RankingFacade: ranking entries
+    end
+
+    Note over RankingFacade: 이후 Product/Brand/Like 조합은 일간과 동일
+    RankingFacade-->>-RankingController: RankingResult
+    RankingController-->>-Client: 200 OK
 ```
